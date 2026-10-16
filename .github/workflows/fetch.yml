@@ -1,0 +1,62 @@
+# Runs fetch_fills.py on GitHub-hosted runners, one job per shard, each pushing its chunks
+# straight to the Hugging Face dataset. Needs the repository secret HF_TOKEN (a Hugging
+# Face token with write access to the dataset). Start it from the Actions tab or with
+#   gh workflow run fetch.yml -f shards=10
+# Test without pushing anything (output kept as a workflow artifact):
+#   gh workflow run fetch.yml -f chunks=54 -f no_upload=true
+name: fetch
+
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: "Number of parallel jobs"
+        default: "10"
+      chunks:
+        description: "Only these chunks, comma-separated (runs one job)"
+        default: ""
+      no_upload:
+        description: "Write to an artifact only, push nothing"
+        type: boolean
+        default: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.m.outputs.shards }}
+    steps:
+      - id: m
+        run: |
+          if [ -n "${{ inputs.chunks }}" ]; then n=1; else n=${{ inputs.shards }}; fi
+          echo "shards=$(python3 -c "import json; print(json.dumps(list(range($n))))")" >> "$GITHUB_OUTPUT"
+
+  fetch:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: fetch
+        run: |
+          args="--shard ${{ matrix.shard }} --shards ${{ strategy.job-total }}"
+          if [ -n "${{ inputs.chunks }}" ]; then args="--chunks ${{ inputs.chunks }}"; fi
+          if [ "${{ inputs.no_upload }}" = "true" ]; then args="$args --no-upload"; fi
+          python fetch_fills.py $args
+      - if: ${{ inputs.no_upload }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: out-${{ matrix.shard }}
+          path: out/
